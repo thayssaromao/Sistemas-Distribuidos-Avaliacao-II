@@ -23,7 +23,7 @@ def __init__(self):
     self.promocoes_validas = []
 
     print("Gateway iniciado com sucesso!!")
-    
+
 
 #def sign_message(self, message: str) -> str:
         
@@ -59,12 +59,30 @@ def votar_promocao(self, id_promocao, voto):
     body=json.dumps(mensagem))
     
     print(f"Voto enviado para processamento")  
+         
+def consumir_promocoes_publicadas(self):
+    result = self.channel.queue_declare(queue='', exclusive=True)
+    queue_name = result.method.queue
 
+    self.channel.queue.bind(
+        exchange=self.exchange,
+        queue=queue_name,
+        routing_key='promocao.publicada'
+    )
 
-        
+    def callback(ch, method, properties, body):
+        mensagem = json.loads(body)
+        self.promocoes_validas.append(mensagem)
+        print("Promoção validada recebida:", mensagem)
+
+    self.channel.basic_consume(
+        queue=queue_name,
+        on_message_callback=callback,
+        auto_ack=True
+    )
+
+    print("Aguardando promções publicadas")
+    self.channel.start_consuming()        
     
-#def start_consumer(self):
-        
-    
-#def listar_promocoes(self):
-        
+def listar_promocoes(self):
+    return self.promocoes_validas        
