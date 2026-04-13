@@ -1,22 +1,70 @@
 import pika
-import sys
+import json
+import os
 
-connection = pika.BlockingConnection(
-    pika.ConnectionParameters(host='localhost'))
-channel = connection.channel()
+from Crypto.Signature import pkcs1_15
+from Crypto.Hash import SHA256
+from Crypto.PublicKey import RSA
 
-exchange = 'promocoes'
 
-channel.exchange_declare(exchange= exchange, exchange_type='topic')
+def __init__(self):
+    self.connection = pika.BlockingConnection(
+        pika.ConnectionParameters(host='localhost'))
+    self.channel = self.connection.channel()
 
-severity = sys.argv[1] if len(sys.argv) > 1 else 'info'
-message = ' '.join(sys.argv[2:]) or 'Hello World!'
+    self.exchange = 'promocoes' #exchange central do sistema
 
-# exemplo: cadastrar promoção
-routing_key = 'promocao.recebida'
-message = 'Promoção: Livro Python por R$50'
+    self.channel.exchange_declare(exchange= self.exchange, exchange_type='topic')
 
-channel.basic_publish(
-    exchange= exchange, routing_key=severity, body=message)
-print(f" [x] Sent {severity}:{message}")
-connection.close()
+    #carregar a private key:
+    with open('private_key.der', 'rb') as f:
+        self.private_key = RSA.import_key(f.read())
+
+    self.promocoes_validas = []
+
+    print("Gateway iniciado com sucesso!!")
+    
+
+#def sign_message(self, message: str) -> str:
+        
+    
+#def publish_event(self, routing_key: str, payload: dict):
+        
+    
+def cadastrar_promocao(self, id_promocao, nome, categoria, preco):
+    mensagem = {
+        "id": id_promocao,
+        "nome": nome,
+        "categoria": categoria,
+        "preço": preco
+    }
+
+    self.channel.basic_publish(
+        exchange= self.exchange, 
+        routing_key='promocao.recebida', 
+        body=json.dumps(mensagem))
+    
+    print(f"promoção enviada para validação")      
+    
+def votar_promocao(self, id_promocao, voto): 
+    #lembrar de colocar uma verificação para voto inválido
+    mensagem = {
+        "id": id_promocao,
+        "voto": voto
+    }
+
+    self.channel.basic_publish(
+    exchange= self.exchange, 
+    routing_key='promocao.voto', 
+    body=json.dumps(mensagem))
+    
+    print(f"Voto enviado para processamento")  
+
+
+        
+    
+#def start_consumer(self):
+        
+    
+#def listar_promocoes(self):
+        
