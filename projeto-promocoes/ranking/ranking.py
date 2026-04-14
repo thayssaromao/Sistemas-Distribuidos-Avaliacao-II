@@ -7,13 +7,13 @@ from Crypto.Hash import SHA256
 from Crypto.PublicKey import RSA
 from Crypto.Signature import pkcs1_15
 
-from gateway.gateway import PUBLIC_KEY_PATH as GATEWAY_PUBLIC_KEY_PATH
-
 EXCHANGE = 'promotion'
 HIGHLIGHT_THRESHOLD = 5  # score mínimo para hot deal
 
-PRIVATE_KEY_PATH = os.path.join(os.path.dirname(__file__), 'private_key.der')
-PUBLIC_KEY_PATH  = os.path.join(os.path.dirname(__file__), 'public_key.der')
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PRIVATE_KEY_PATH        = os.path.join(_BASE_DIR, 'private_key.der')
+PUBLIC_KEY_PATH         = os.path.join(_BASE_DIR, 'public_key.der')
+GATEWAY_PUBLIC_KEY_PATH = os.path.join(_BASE_DIR, '..', 'gateway', 'public_key.der')
 
 
 def _ensure_gateway_key():
@@ -214,3 +214,17 @@ class Ranking:
             self._pub_conn.close()
         except Exception:
             pass
+
+
+if __name__ == '__main__':
+    ranking = Ranking()
+    try:
+        print("Aguardando eventos 'promotion.vote' no RabbitMQ... (Ctrl+C para encerrar)")
+        # Mantém o processo vivo enquanto a thread daemon consome mensagens
+        import time
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n[Ranking] Encerrando...")
+    finally:
+        ranking.fechar()

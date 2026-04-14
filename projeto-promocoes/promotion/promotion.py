@@ -10,12 +10,11 @@ from Crypto.Signature import pkcs1_15
 EXCHANGE = 'promotion'
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+GATEWAY_PUBLIC_KEY_PATH = os.path.join(BASE_DIR, '..', 'gateway', 'public_key.der')
+
 # Chaves próprias do serviço
 PRIVATE_KEY_PATH = os.path.join(BASE_DIR, 'private_key.der')
 PUBLIC_KEY_PATH  = os.path.join(BASE_DIR, 'public_key.der')
-
-# Chave pública do produtor (Gateway) - Deve ser copiada manualmente para esta pasta
-GATEWAY_PUBLIC_KEY_PATH = os.path.join(BASE_DIR, 'gateway_public_key.der')
 
 def _ensure_keys():
     """Gera o par de chaves RSA do Promotion se ainda não existir."""
@@ -42,13 +41,8 @@ class PromotionService:
 
         # Carregar chave pública do Gateway (necessária para validar promotion.received)
         if not os.path.exists(GATEWAY_PUBLIC_KEY_PATH):
-            print(f"\n[ERRO CRÍTICO] Chave pública do Gateway não encontrada!")
-            print(f"Caminho esperado: {GATEWAY_PUBLIC_KEY_PATH}")
-            print("-" * 60)
-            print("COMO RESOLVER:")
-            print("1. Inicie o Gateway para gerar as chaves dele.")
-            print("2. Copie 'gateway/public_key.der' para 'promotion/gateway_public_key.der'.")
-            print("-" * 60)
+            print(f"\n[ERRO CRÍTICO] Chave pública do Gateway não encontrada em: {GATEWAY_PUBLIC_KEY_PATH}")
+            print("Certifique-se de que o Gateway foi iniciado antes do Promotion Service.")
             sys.exit(1)
 
         with open(GATEWAY_PUBLIC_KEY_PATH, 'rb') as f:

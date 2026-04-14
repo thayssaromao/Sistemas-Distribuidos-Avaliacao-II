@@ -101,7 +101,19 @@ class Gateway:
             'id_promocao': id_promocao,
             'voto': voto,
         }
-        return self.publish_event('promotion.vote', payload)
+        signature = self.publish_event('promotion.vote', payload)
+
+        # Atualiza contagem local para refletir na listagem
+        for p in self.promocoes_validas:
+            if p.get('id') == id_promocao:
+                votos = p.setdefault('votos', {'positivos': 0, 'negativos': 0})
+                if voto == 'positivo':
+                    votos['positivos'] += 1
+                else:
+                    votos['negativos'] += 1
+                break
+
+        return signature
 
     def listar_promocoes(self) -> list[dict]:
         return list(self.promocoes_validas)
