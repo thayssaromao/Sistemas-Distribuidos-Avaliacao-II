@@ -41,6 +41,7 @@ class Gateway:
             self._promotion_public_key = RSA.import_key(f.read())
 
         self.promocoes_validas: list[dict] = []
+        self._lock = threading.Lock()
 
         # Canal de publicação (thread principal)
         self._pub_conn = pika.BlockingConnection(
@@ -124,19 +125,21 @@ class Gateway:
         signature = self.publish_event('promotion.vote', payload)
 
         # Atualiza contagem local para refletir na listagem
-        for p in self.promocoes_validas:
-            if p.get('id') == id_promocao:
-                votos = p.setdefault('votos', {'positivos': 0, 'negativos': 0})
-                if voto == 'positivo':
-                    votos['positivos'] += 1
-                else:
-                    votos['negativos'] += 1
-                break
+        with self._lock:
+            for p in self.promocoes_validas:
+                if p.get('id') == id_promocao:
+                    votos = p.setdefault('votos', {'positivos': 0, 'negativos': 0})
+                    if voto == 'positivo':
+                        votos['positivos'] += 1
+                    else:
+                        votos['negativos'] += 1
+                    break
 
         return signature
 
     def listar_promocoes(self) -> list[dict]:
-        return list(self.promocoes_validas)
+        with self._lock:
+            return list(self.promocoes_validas)
 
     # ------------------------------------------------------------------
     # Consumidor de promotion.published (thread daemon)
@@ -176,7 +179,8 @@ class Gateway:
                     print("[Gateway] Assinatura do Promotion Service INVÁLIDA — mensagem descartada.")
                     return
 
-                self.promocoes_validas.append(payload)
+                with self._lock:
+                    self.promocoes_validas.append(payload)
                 print(f"[Gateway] Promoção {payload.get('id')} aceita e listada.")
 
             ch.basic_consume(
