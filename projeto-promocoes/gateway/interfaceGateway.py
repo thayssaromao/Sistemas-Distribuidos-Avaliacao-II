@@ -1,40 +1,7 @@
 import os
 import time
 
-# ---------------------------------------------------------------------------
-# Dados fictícios – simulam a lista local de promoções validadas pelo
-# MS Promocao (em produção, esta lista seria populada ao consumir eventos
-# promocao.publicada do RabbitMQ).
-# ---------------------------------------------------------------------------
-MOCK_PROMOCOES_PUBLICADAS = [
-    {
-        "id": "P001",
-        "titulo": "Notebook Gamer XZ Pro",
-        "descricao": "Notebook com RTX 4060, 16 GB RAM, SSD 512 GB",
-        "preco_original": 5999.00,
-        "preco_promocional": 4299.00,
-        "categoria": "eletrônicos",
-        "votos": {"positivos": 42, "negativos": 3},
-    },
-    {
-        "id": "P002",
-        "titulo": "Combo 3 Livros de Python",
-        "descricao": "Python Fluente + Automatize + Python Cookbook",
-        "preco_original": 280.00,
-        "preco_promocional": 159.90,
-        "categoria": "livros",
-        "votos": {"positivos": 18, "negativos": 1},
-    },
-    {
-        "id": "P003",
-        "titulo": "Elden Ring – Edição Completa",
-        "descricao": "Jogo base + Shadow of the Erdtree DLC",
-        "preco_original": 349.90,
-        "preco_promocional": 199.90,
-        "categoria": "jogos",
-        "votos": {"positivos": 87, "negativos": 5},
-    },
-]
+from gateway import Gateway
 
 CATEGORIAS_VALIDAS = ["livros", "jogos", "eletrônicos", "roupas", "alimentos"]
 
@@ -62,7 +29,7 @@ def pressione_enter():
 # Fluxos da LOJA
 # ---------------------------------------------------------------------------
 
-def cadastrar_promocao():
+def cadastrar_promocao(gateway: Gateway):
     limpar_tela()
     banner("CADASTRAR NOVA PROMOÇÃO")
 
@@ -91,42 +58,28 @@ def cadastrar_promocao():
         pressione_enter()
         return
 
-    # Monta o envelope do evento (placeholder)
-    evento = {
-        "routing_key": "promotion.received",
-        "payload": {
-            "titulo": titulo,
-            "descricao": descricao,
-            "categoria": categoria,
-            "preco_original": preco_orig,
-            "preco_promocional": preco_prom,
-        },
-        # Em produção: assinatura digital gerada com a chave privada do Gateway
-        "signature": "<PLACEHOLDER: assinatura_digital_RSA>",
-    }
-
     print("\n" + "-" * 52)
-    print("  Resumo do evento a ser publicado:")
-    print(f"    routing_key : {evento['routing_key']}")
-    print(f"    titulo      : {evento['payload']['titulo']}")
-    print(f"    categoria   : {evento['payload']['categoria']}")
-    print(f"    preço       : R$ {evento['payload']['preco_promocional']:.2f}"
-          f"  (de R$ {evento['payload']['preco_original']:.2f})")
-    print(f"    signature   : {evento['signature']}")
+    print("  Publicando evento 'promotion.received'...")
+
+    try:
+        id_gerado, signature = gateway.cadastrar_promocao(
+            titulo, descricao, categoria, preco_orig, preco_prom
+        )
+        print(f"\n  Evento publicado com sucesso!")
+        print(f"    ID gerado   : {id_gerado}")
+        print(f"    routing_key : promotion.received")
+        print(f"    titulo      : {titulo}")
+        print(f"    categoria   : {categoria}")
+        print(f"    preço       : R$ {preco_prom:.2f}  (de R$ {preco_orig:.2f})")
+        print(f"    assinatura  : {signature[:32]}...")
+    except Exception as e:
+        print(f"\n[ERRO] Falha ao publicar evento: {e}")
+
     print("-" * 52)
-
-    # TODO: publicar evento no RabbitMQ
-    # channel.basic_publish(
-    #     exchange="promocoes",
-    #     routing_key="promotion.received",
-    #     body=json.dumps(evento)
-    # )
-    print("\n[PLACEHOLDER] Evento 'promotion.received' seria publicado no RabbitMQ.")
-
     pressione_enter()
 
 
-def menu_loja():
+def menu_loja(gateway: Gateway):
     while True:
         limpar_tela()
         banner("MENU — LOJA")
@@ -136,7 +89,7 @@ def menu_loja():
         opcao = input("  Opção: ").strip()
 
         if opcao == "1":
-            cadastrar_promocao()
+            cadastrar_promocao(gateway)
         elif opcao == "0":
             print("\n  Até logo!")
             time.sleep(1)
@@ -150,85 +103,84 @@ def menu_loja():
 # Fluxos do CLIENTE
 # ---------------------------------------------------------------------------
 
-def listar_promocoes():
+def listar_promocoes(gateway: Gateway):
     limpar_tela()
     banner("PROMOÇÕES PUBLICADAS")
 
-    if not MOCK_PROMOCOES_PUBLICADAS:
+    promocoes = gateway.listar_promocoes()
+
+    if not promocoes:
         print("\n  Nenhuma promoção disponível no momento.")
-        # TODO: lista seria atualizada em tempo real ao consumir
-        #       eventos 'promotion.published' do RabbitMQ.
+        print("  (Aguardando eventos 'promotion.published' do RabbitMQ)")
         pressione_enter()
         return
 
     print()
-    for p in MOCK_PROMOCOES_PUBLICADAS:
-        desconto = 100 * (1 - p["preco_promocional"] / p["preco_original"])
-        print(f"  [{p['id']}] {p['titulo']}")
-        print(f"       Categoria : {p['categoria']}")
-        print(f"       Preço     : R$ {p['preco_promocional']:.2f}"
-              f"  (de R$ {p['preco_original']:.2f}, -{desconto:.0f}%)")
-        print(f"       Votos     : +{p['votos']['positivos']} / -{p['votos']['negativos']}")
-        print(f"       Descrição : {p['descricao']}")
-        print()
+    for p in promocoes:
+        preco_orig = p.get('preco_original', 0)
+        preco_prom = p.get('preco_promocional', 0)
+        desconto = 100 * (1 - preco_prom / preco_orig) if preco_orig else 0
+        votos = p.get('votos', {})
 
-    # TODO: esta lista é mantida localmente pelo Gateway ao consumir
-    #       eventos 'promotion.published' do RabbitMQ.
-    print("  [PLACEHOLDER] Lista populada a partir de eventos 'promotion.published' do RabbitMQ.")
+        print(f"  [{p.get('id', '?')}] {p.get('titulo', '?')}")
+        print(f"       Categoria : {p.get('categoria', '?')}")
+        print(f"       Preço     : R$ {preco_prom:.2f}"
+              f"  (de R$ {preco_orig:.2f}, -{desconto:.0f}%)")
+        if votos:
+            print(f"       Votos     : +{votos.get('positivos', 0)}"
+                  f" / -{votos.get('negativos', 0)}")
+        print(f"       Descrição : {p.get('descricao', '')}")
+        print()
 
     pressione_enter()
 
 
-def votar_promocao():
+def votar_promocao(gateway: Gateway):
     limpar_tela()
     banner("VOTAR EM PROMOÇÃO")
 
-    ids_validos = [p["id"] for p in MOCK_PROMOCOES_PUBLICADAS]
+    promocoes = gateway.listar_promocoes()
+
+    if not promocoes:
+        print("\n  Nenhuma promoção disponível para votação.")
+        pressione_enter()
+        return
+
+    ids_validos = [p.get('id', '') for p in promocoes if p.get('id')]
     print(f"\n  Promoções disponíveis: {', '.join(ids_validos)}")
 
-    promocao_id = input("\n  ID da promoção : ").strip().upper()
+    promocao_id = input("\n  ID da promoção : ").strip()
     if promocao_id not in ids_validos:
         print(f"\n[AVISO] ID '{promocao_id}' não encontrado.")
         pressione_enter()
         return
 
-    voto = input("  Voto [+/-]     : ").strip()
-    if voto not in ("+", "-"):
+    voto_raw = input("  Voto [+/-]     : ").strip()
+    if voto_raw not in ("+", "-"):
         print("\n[AVISO] Voto deve ser '+' ou '-'.")
         pressione_enter()
         return
 
-    # Monta o envelope do evento (placeholder)
-    evento = {
-        "routing_key": "promotion.vote",
-        "payload": {
-            "promocao_id": promocao_id,
-            "voto": "positivo" if voto == "+" else "negativo",
-        },
-        # Em produção: assinatura digital gerada com a chave privada do Gateway
-        "signature": "<PLACEHOLDER: assinatura_digital_RSA>",
-    }
+    voto = "positivo" if voto_raw == "+" else "negativo"
 
     print("\n" + "-" * 52)
-    print("  Resumo do evento a ser publicado:")
-    print(f"    routing_key  : {evento['routing_key']}")
-    print(f"    promocao_id  : {evento['payload']['promocao_id']}")
-    print(f"    voto         : {evento['payload']['voto']}")
-    print(f"    signature    : {evento['signature']}")
+    print("  Publicando evento 'promotion.vote'...")
+
+    try:
+        signature = gateway.votar_promocao(promocao_id, voto)
+        print(f"\n  Voto enviado com sucesso!")
+        print(f"    routing_key  : promotion.vote")
+        print(f"    promocao_id  : {promocao_id}")
+        print(f"    voto         : {voto}")
+        print(f"    assinatura   : {signature[:32]}...")
+    except Exception as e:
+        print(f"\n[ERRO] Falha ao publicar voto: {e}")
+
     print("-" * 52)
-
-    # TODO: publicar evento no RabbitMQ
-    # channel.basic_publish(
-    #     exchange="promocoes",
-    #     routing_key="promotion.vote",
-    #     body=json.dumps(evento)
-    # )
-    print("\n[PLACEHOLDER] Evento 'promotion.vote' seria publicado no RabbitMQ.")
-
     pressione_enter()
 
 
-def menu_cliente():
+def menu_cliente(gateway: Gateway):
     while True:
         limpar_tela()
         banner("MENU — CLIENTE")
@@ -239,9 +191,9 @@ def menu_cliente():
         opcao = input("  Opção: ").strip()
 
         if opcao == "1":
-            listar_promocoes()
+            listar_promocoes(gateway)
         elif opcao == "2":
-            votar_promocao()
+            votar_promocao(gateway)
         elif opcao == "0":
             print("\n  Até logo!")
             time.sleep(1)
@@ -256,6 +208,17 @@ def menu_cliente():
 # ---------------------------------------------------------------------------
 
 def main():
+    limpar_tela()
+    banner("MS GATEWAY — Sistema de Promoções")
+    print("\n  Conectando ao RabbitMQ...")
+
+    try:
+        gateway = Gateway()
+    except Exception as e:
+        print(f"\n[ERRO] Não foi possível iniciar o Gateway: {e}")
+        print("  Verifique se o RabbitMQ está em execução e tente novamente.")
+        return
+
     while True:
         limpar_tela()
         banner("MS GATEWAY — Sistema de Promoções")
@@ -267,10 +230,11 @@ def main():
         opcao = input("  Opção: ").strip()
 
         if opcao == "1":
-            menu_loja()
+            menu_loja(gateway)
         elif opcao == "2":
-            menu_cliente()
+            menu_cliente(gateway)
         elif opcao == "0":
+            gateway.fechar()
             limpar_tela()
             print("  Sistema encerrado.\n")
             break
