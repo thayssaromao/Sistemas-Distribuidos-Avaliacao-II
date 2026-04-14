@@ -9,8 +9,10 @@ from Crypto.PublicKey import RSA
 from Crypto.Signature import pkcs1_15
 
 EXCHANGE = 'promotion'
-PRIVATE_KEY_PATH = os.path.join(os.path.dirname(__file__), 'private_key.der')
-PUBLIC_KEY_PATH  = os.path.join(os.path.dirname(__file__), 'public_key.der')
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PRIVATE_KEY_PATH          = os.path.join(_BASE_DIR, 'private_key.der')
+PUBLIC_KEY_PATH           = os.path.join(_BASE_DIR, 'public_key.der')
+PROMOTION_PUBLIC_KEY_PATH = os.path.join(_BASE_DIR, '..', 'promotion', 'public_key.der')
 
 
 def _ensure_keys():
@@ -30,7 +32,16 @@ class Gateway:
         with open(PRIVATE_KEY_PATH, 'rb') as f:
             self._private_key = RSA.import_key(f.read())
 
+        if not os.path.exists(PROMOTION_PUBLIC_KEY_PATH):
+            raise FileNotFoundError(
+                f"Chave pública do Promotion Service não encontrada em: {PROMOTION_PUBLIC_KEY_PATH}\n"
+                "Certifique-se de que o Promotion Service foi iniciado antes do Gateway."
+            )
+        with open(PROMOTION_PUBLIC_KEY_PATH, 'rb') as f:
+            self._promotion_public_key = RSA.import_key(f.read())
+
         self.promocoes_validas: list[dict] = []
+        self._lock = threading.Lock()
 
         # Canal de publicação (thread principal)
         self._pub_conn = pika.BlockingConnection(
@@ -46,6 +57,16 @@ class Gateway:
     # ------------------------------------------------------------------
     # Assinatura digital
     # ------------------------------------------------------------------
+
+    def verify_promotion_signature(self, payload: dict, signature_hex: str) -> bool:
+        """Valida a assinatura do Promotion Service sobre o payload."""
+        try:
+            data = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
+            h = SHA256.new(data)
+            pkcs1_15.new(self._promotion_public_key).verify(h, bytes.fromhex(signature_hex))
+            return True
+        except (ValueError, TypeError):
+            return False
 
     def sign_message(self, payload: dict) -> str:
         """Assina o payload (serializado como JSON com chaves ordenadas)
@@ -104,19 +125,21 @@ class Gateway:
         signature = self.publish_event('promotion.vote', payload)
 
         # Atualiza contagem local para refletir na listagem
-        for p in self.promocoes_validas:
-            if p.get('id') == id_promocao:
-                votos = p.setdefault('votos', {'positivos': 0, 'negativos': 0})
-                if voto == 'positivo':
-                    votos['positivos'] += 1
-                else:
-                    votos['negativos'] += 1
-                break
+        with self._lock:
+            for p in self.promocoes_validas:
+                if p.get('id') == id_promocao:
+                    votos = p.setdefault('votos', {'positivos': 0, 'negativos': 0})
+                    if voto == 'positivo':
+                        votos['positivos'] += 1
+                    else:
+                        votos['negativos'] += 1
+                    break
 
         return signature
 
     def listar_promocoes(self) -> list[dict]:
-        return list(self.promocoes_validas)
+        with self._lock:
+            return list(self.promocoes_validas)
 
     # ------------------------------------------------------------------
     # Consumidor de promotion.published (thread daemon)
@@ -139,9 +162,31 @@ class Gateway:
             )
 
             def callback(ch_, method, properties, body):
-                envelope = json.loads(body)
-                payload = envelope.get('payload', envelope)
-                self.promocoes_validas.append(payload)
+                try:
+                    envelope = json.loads(body)
+                except json.JSONDecodeError:
+                    print("[Gateway] Mensagem recebida não é JSON válido — descartada.")
+                    return
+
+                payload   = envelope.get('payload')
+                signature = envelope.get('signature')
+
+                if not payload or not signature:
+                    print("[Gateway] Envelope incompleto (payload ou signature ausente) — descartado.")
+                    return
+
+                if not self.verify_promotion_signature(payload, signature):
+                    print("[Gateway] Assinatura do Promotion Service INVÁLIDA — mensagem descartada.")
+                    return
+
+                promo_id = payload.get('id')
+                with self._lock:
+                    ids_existentes = {p.get('id') for p in self.promocoes_validas}
+                    if promo_id in ids_existentes:
+                        print(f"[Gateway] Promoção {promo_id} já registrada — duplicata descartada.")
+                        return
+                    self.promocoes_validas.append(payload)
+                print(f"[Gateway] Promoção {promo_id} aceita e listada.")
 
             ch.basic_consume(
                 queue=queue_name,

@@ -59,7 +59,7 @@ class PromotionService:
             print(f"[ERRO] Falha ao conectar ao RabbitMQ: {e}")
             sys.exit(1)
 
-        print("Promotion Service iniciado com sucesso!")
+        print("\nPromotion Service iniciado com sucesso!")
 
     # ---------------------------------------------------------------
     # Segurança (RSA-SHA256)
