@@ -12,7 +12,7 @@ def __init__(self):
         pika.ConnectionParameters(host='localhost'))
     self.channel = self.connection.channel()
 
-    self.exchange = 'promocoes' #exchange central do sistema
+    self.exchange = 'promotion' #exchange central do sistema
 
     self.channel.exchange_declare(exchange= self.exchange, exchange_type='topic')
 
@@ -41,7 +41,7 @@ def cadastrar_promocao(self, id_promocao, nome, categoria, preco):
 
     self.channel.basic_publish(
         exchange= self.exchange, 
-        routing_key='promocao.recebida', 
+        routing_key='promotion.received', 
         body=json.dumps(mensagem))
     
     print(f"promoção enviada para validação")      
@@ -55,7 +55,7 @@ def votar_promocao(self, id_promocao, voto):
 
     self.channel.basic_publish(
     exchange= self.exchange, 
-    routing_key='promocao.voto', 
+    routing_key='promotion.vote', 
     body=json.dumps(mensagem))
     
     print(f"Voto enviado para processamento")  
@@ -67,7 +67,7 @@ def consumir_promocoes_publicadas(self):
     self.channel.queue.bind(
         exchange=self.exchange,
         queue=queue_name,
-        routing_key='promocao.publicada'
+        routing_key='promocao.published'
     )
 
     def callback(ch, method, properties, body):
@@ -81,7 +81,7 @@ def consumir_promocoes_publicadas(self):
         auto_ack=True
     )
 
-    print("Aguardando promções publicadas")
+    print("Aguardando promoções publicadas")
     self.channel.start_consuming()        
     
 def listar_promocoes(self):
