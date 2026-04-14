@@ -72,6 +72,8 @@ class NotificationService:
             print(f"[ERRO] Falha ao conectar ao RabbitMQ (publicação): {e}")
             sys.exit(1)
 
+        self._ids_notificados: set[str] = set()
+
         print("Notification Service iniciado com sucesso!")
 
     # ------------------------------------------------------------------
@@ -127,6 +129,12 @@ class NotificationService:
             print("[Notificação] Assinatura do Promotion INVÁLIDA — descartado.")
             return
 
+        promo_id = payload.get('id')
+        if promo_id in self._ids_notificados:
+            print(f"[Notificação] Promoção {promo_id} já notificada — duplicata descartada.")
+            return
+        self._ids_notificados.add(promo_id)
+
         categoria = payload.get('categoria', 'geral')
         titulo    = payload.get('titulo', 'Nova Promoção')
         preco     = payload.get('preco_promocional', 0)
@@ -143,8 +151,14 @@ class NotificationService:
             print("[Notificação] Assinatura do Ranking INVÁLIDA — descartado.")
             return
 
-        id_promo = payload.get('id_promocao', '?')
-        score    = payload.get('score', 0)
+        id_promo  = payload.get('id_promocao', '?')
+        destaque_key = f"highlight:{id_promo}"
+        if destaque_key in self._ids_notificados:
+            print(f"[Notificação] Destaque de {id_promo} já notificado — duplicata descartada.")
+            return
+        self._ids_notificados.add(destaque_key)
+
+        score = payload.get('score', 0)
         msg = f"HOT DEAL! Promocao {id_promo} esta em destaque com score {score}!"
         self._publish_notification("destaque", msg)
 

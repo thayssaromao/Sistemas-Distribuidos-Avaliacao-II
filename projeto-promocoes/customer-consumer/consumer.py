@@ -11,7 +11,6 @@ EXCHANGE = 'promotion'
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 NOTIFICATION_PUBLIC_KEY_PATH = os.path.join(_BASE_DIR, '..', 'notification', 'public_key.der')
-RANKING_PUBLIC_KEY_PATH      = os.path.join(_BASE_DIR, '..', 'ranking',      'public_key.der')
 
 
 def _load_key(path: str, nome: str):
@@ -36,7 +35,6 @@ def _verify(payload: dict, signature_hex: str, public_key) -> bool:
 
 def main():
     notification_pub_key = _load_key(NOTIFICATION_PUBLIC_KEY_PATH, 'Notification Service')
-    ranking_pub_key      = _load_key(RANKING_PUBLIC_KEY_PATH,      'Ranking Service')
 
     conn = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
     channel = conn.channel()
@@ -74,11 +72,10 @@ def main():
             print("[Consumer] Envelope incompleto — descartado.")
             return
 
-        # Destaques são assinados pelo Ranking; notificações de promoção pelo Notification
-        if method.routing_key == 'promotion.destaque':
-            pub_key = ranking_pub_key
-        else:
-            pub_key = notification_pub_key
+        # Todos os tópicos recebidos pelo consumer são publicados pelo Notification Service
+        # (promotion.highlight do Ranking é consumido pelo Notification, que re-publica
+        # como promotion.destaque assinado com a própria chave do Notification)
+        pub_key = notification_pub_key
 
         if not _verify(payload, signature, pub_key):
             print(f"[Consumer] Assinatura INVÁLIDA em '{method.routing_key}' — descartado.")

@@ -49,11 +49,9 @@ class Ranking:
         # { id_promocao: { 'positivos': int, 'negativos': int, 'score': int, 'highlight': bool } }
         self._votos: dict[str, dict] = {}
 
-        # Canal de publicação (thread principal)
-        self._pub_conn = pika.BlockingConnection(
-            pika.ConnectionParameters(host='localhost'))
-        self._pub_ch = self._pub_conn.channel()
-        self._pub_ch.exchange_declare(exchange=EXCHANGE, exchange_type='topic')
+        # Conexão de publicação e consumo são criadas dentro da thread daemon
+        # (pika BlockingConnection não é thread-safe)
+        self._pub_ch = None
 
         # Canal de consumo (thread daemon separada)
         self._iniciar_consumer()
@@ -147,10 +145,18 @@ class Ranking:
 
     def _iniciar_consumer(self):
         def run():
+            # Conexão de consumo
             conn = pika.BlockingConnection(
                 pika.ConnectionParameters(host='localhost'))
             ch = conn.channel()
             ch.exchange_declare(exchange=EXCHANGE, exchange_type='topic')
+
+            # Conexão de publicação — separada e na mesma thread para ser thread-safe
+            pub_conn = pika.BlockingConnection(
+                pika.ConnectionParameters(host='localhost'))
+            pub_ch = pub_conn.channel()
+            pub_ch.exchange_declare(exchange=EXCHANGE, exchange_type='topic')
+            self._pub_ch = pub_ch
 
             result = ch.queue_declare(queue='', exclusive=True)
             queue_name = result.method.queue
@@ -210,10 +216,7 @@ class Ranking:
     # ------------------------------------------------------------------
 
     def fechar(self):
-        try:
-            self._pub_conn.close()
-        except Exception:
-            pass
+        pass  # conexões são gerenciadas dentro da thread daemon
 
 
 if __name__ == '__main__':

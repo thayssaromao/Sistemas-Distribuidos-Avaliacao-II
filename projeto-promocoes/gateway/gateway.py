@@ -179,9 +179,14 @@ class Gateway:
                     print("[Gateway] Assinatura do Promotion Service INVÁLIDA — mensagem descartada.")
                     return
 
+                promo_id = payload.get('id')
                 with self._lock:
+                    ids_existentes = {p.get('id') for p in self.promocoes_validas}
+                    if promo_id in ids_existentes:
+                        print(f"[Gateway] Promoção {promo_id} já registrada — duplicata descartada.")
+                        return
                     self.promocoes_validas.append(payload)
-                print(f"[Gateway] Promoção {payload.get('id')} aceita e listada.")
+                print(f"[Gateway] Promoção {promo_id} aceita e listada.")
 
             ch.basic_consume(
                 queue=queue_name,
