@@ -11,7 +11,7 @@ A Routing Key é um "atributo" ou "etiqueta" que o produtor anexa à mensagem. E
 - promotion.received
 - promotion.vote
 - promotion.published
-- promotion.highlight
+- promotion.highlight //publica promoçoes em destaque
 - promotion.[category]
 
 # Sobre o Projeto
