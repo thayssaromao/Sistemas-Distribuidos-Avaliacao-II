@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 
 import pika
 from Crypto.Hash import SHA256
@@ -7,14 +8,19 @@ from Crypto.PublicKey import RSA
 from Crypto.Signature import pkcs1_15
 
 EXCHANGE = 'promotion'
-PRIVATE_KEY_PATH = os.path.join(os.path.dirname(__file__), 'private_key.der')
-PUBLIC_KEY_PATH  = os.path.join(os.path.dirname(__file__), 'public_key.der')
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-GATEWAY_PUBLIC_KEY_PATH = os.path.join(BASE_DIR, '..', 'gateway', 'public_key.der')
+# Chaves próprias do serviço
+PRIVATE_KEY_PATH = os.path.join(BASE_DIR, 'private_key.der')
+PUBLIC_KEY_PATH  = os.path.join(BASE_DIR, 'public_key.der')
+
+# Chave pública do produtor (Gateway) - Deve ser copiada manualmente para esta pasta
+GATEWAY_PUBLIC_KEY_PATH = os.path.join(BASE_DIR, 'gateway_public_key.der')
 
 def _ensure_keys():
-    """Gera o par de chaves RSA do Gateway se ainda não existir."""
+    """Gera o par de chaves RSA do Promotion se ainda não existir."""
     if not os.path.exists(PRIVATE_KEY_PATH):
+        print("[INFO] Gerando novas chaves RSA para o Promotion Service...")
         key = RSA.generate(2048)
         with open(PRIVATE_KEY_PATH, 'wb') as f:
             f.write(key.export_key('DER'))
@@ -26,23 +32,43 @@ class PromotionService:
     def __init__(self):
         _ensure_keys()
 
-        with open(PRIVATE_KEY_PATH, 'rb') as f:
-            self._private_key = RSA.import_key(f.read())
+        # Carregar chave privada própria
+        try:
+            with open(PRIVATE_KEY_PATH, 'rb') as f:
+                self._private_key = RSA.import_key(f.read())
+        except Exception as e:
+            print(f"[ERRO] Falha ao carregar chave privada: {e}")
+            sys.exit(1)
+
+        # Carregar chave pública do Gateway (necessária para validar promotion.received)
+        if not os.path.exists(GATEWAY_PUBLIC_KEY_PATH):
+            print(f"\n[ERRO CRÍTICO] Chave pública do Gateway não encontrada!")
+            print(f"Caminho esperado: {GATEWAY_PUBLIC_KEY_PATH}")
+            print("-" * 60)
+            print("COMO RESOLVER:")
+            print("1. Inicie o Gateway para gerar as chaves dele.")
+            print("2. Copie 'gateway/public_key.der' para 'promotion/gateway_public_key.der'.")
+            print("-" * 60)
+            sys.exit(1)
 
         with open(GATEWAY_PUBLIC_KEY_PATH, 'rb') as f:
             self._gateway_public_key = RSA.import_key(f.read())
 
         self.promocoes = {}
 
-        # Canal de publicação (thread principal)
-        self._conn = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
-        self._ch = self._conn.channel()
-        self._ch.exchange_declare(exchange=EXCHANGE, exchange_type='topic')
+        # Conexão com RabbitMQ
+        try:
+            self._conn = pika.BlockingConnection(pika.ConnectionParameters(host='localhost'))
+            self._ch = self._conn.channel()
+            self._ch.exchange_declare(exchange=EXCHANGE, exchange_type='topic')
+        except Exception as e:
+            print(f"[ERRO] Falha ao conectar ao RabbitMQ: {e}")
+            sys.exit(1)
 
-        print("Promotion iniciado com sucesso!")
+        print("Promotion Service iniciado com sucesso!")
 
     # ---------------------------------------------------------------
-    # Segurança
+    # Segurança (RSA-SHA256)
     # ---------------------------------------------------------------
 
     def sign_message(self, payload: dict) -> str:
@@ -64,17 +90,16 @@ class PromotionService:
             return False
         
     # ---------------------------------------------------------------
-    # Publicação
+    # Publicação de Eventos
     # ---------------------------------------------------------------
 
     def publish_event(self, routing_key: str, payload: dict) -> str:
-        """Assina e publica um evento."""
+        """Assina e publica um evento conforme o padrão do README."""
         signature = self.sign_message(payload)
 
         envelope = {
             'payload': payload,
-            'signature': signature,
-            'producer': 'promotion',
+            'signature': signature,  # Voltando para minúsculo para compatibilidade
         }
 
         self._ch.basic_publish(
@@ -86,12 +111,10 @@ class PromotionService:
         return signature
     
     # ---------------------------------------------------------------
-    # Lógica principal
+    # Lógica de Negócio
     # ---------------------------------------------------------------
     def registrar_promocao(self, payload: dict) -> dict:
-        """
-        Registra a promoção localmente e devolve a promoção publicada.
-        """
+        """Registra a promoção localmente."""
         promocao = {
             'id': payload['id'],
             'titulo': payload['titulo'],
@@ -109,21 +132,17 @@ class PromotionService:
         return promocao
 
     def processar_promocao_recebida(self, envelope: dict):
-            """Processa um evento promotion.received."""
+            """Processa um evento 'promotion.received' do Gateway."""
             payload = envelope.get('payload')
-            signature = envelope.get('signature')
-            producer = envelope.get('producer')
+            signature = envelope.get('signature') # Voltando para minúsculo
 
             if not payload or not signature:
-                print("[AVISO] Evento inválido: envelope incompleto.")
+                print("[AVISO] Evento inválido: envelope incompleto (Payload ou Signature ausente).")
                 return
 
-            if producer != 'gateway':
-                print("[AVISO] Evento descartado: produtor inesperado.")
-                return
-
+            # Validação obrigatória por README
             if not self.verify_signature(payload, signature):
-                print("[AVISO] Assinatura inválida. Evento descartado.")
+                print("[AVISO] Assinatura do Gateway INVÁLIDA. Evento descartado.")
                 return
 
             promocao_id = payload.get('id')
@@ -135,20 +154,20 @@ class PromotionService:
                 print(f"[AVISO] Promoção {promocao_id} já registrada. Ignorando duplicata.")
                 return
 
+            # Se válido, registra e publica que está pronta
             promocao_publicada = self.registrar_promocao(payload)
             published_signature = self.publish_event(
                 'promotion.published',
                 promocao_publicada
             )
 
-            print(f"[OK] Promoção registrada e publicada:")
-            print(f"     id         : {promocao_publicada['id']}")
-            print(f"     titulo     : {promocao_publicada['titulo']}")
-            print(f"     categoria  : {promocao_publicada['categoria']}")
-            print(f"     assinatura : {published_signature[:32]}...")
+            print(f"[OK] Promoção Validada e Publicada:")
+            print(f"     ID: {promocao_publicada['id']}")
+            print(f"     Título: {promocao_publicada['titulo']}")
+            print(f"     Assinatura Gerada: {published_signature[:16]}...")
 
 # ---------------------------------------------------------------
-# Consumo
+# Consumo de Eventos
 # ---------------------------------------------------------------
 
     def iniciar_consumer(self):
@@ -168,7 +187,7 @@ class PromotionService:
             except json.JSONDecodeError:
                 print("[ERRO] Mensagem recebida não é um JSON válido.")
             except Exception as e:
-                print(f"[ERRO] Falha ao processar promoção: {e}")
+                print(f"[ERRO] Falha ao processar evento: {e}")
 
         self._ch.basic_consume(
             queue=queue_name,
@@ -176,19 +195,12 @@ class PromotionService:
             auto_ack=True,
         )
 
-        print("Aguardando eventos 'promotion.received'...")
+        print("Aguardando eventos 'promotion.received' no RabbitMQ...")
         self._ch.start_consuming()
-
-# ---------------------------------------------------------------
-# Utilidade
-# ---------------------------------------------------------------
-
-    def listar_promocoes_registradas(self) -> list[dict]:
-        return list(self.promocoes.values())
 
     def fechar(self):
         try:
-            if self._conn and self._conn.is_open:
+            if hasattr(self, '_conn') and self._conn.is_open:
                 self._conn.close()
         except Exception:
             pass
@@ -197,5 +209,7 @@ if __name__ == '__main__':
     service = PromotionService()
     try:
         service.iniciar_consumer()
+    except KeyboardInterrupt:
+        print("\n[INFO] Encerrando Promotion Service...")
     finally:
         service.fechar()
