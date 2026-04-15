@@ -1,6 +1,7 @@
 import json
 import os
 import threading
+import time
 import uuid
 
 import pika
@@ -147,53 +148,87 @@ class Gateway:
 
     def _iniciar_consumer(self):
         def run():
-            conn = pika.BlockingConnection(
-                pika.ConnectionParameters(host='localhost'))
-            ch = conn.channel()
-            ch.exchange_declare(exchange=EXCHANGE, exchange_type='topic')
-
-            result = ch.queue_declare(queue='', exclusive=True)
-            queue_name = result.method.queue
-
-            ch.queue_bind(
-                exchange=EXCHANGE,
-                queue=queue_name,
-                routing_key='promotion.published',
-            )
-
-            def callback(ch_, method, properties, body):
+            while True:
+                conn = None
                 try:
-                    envelope = json.loads(body)
-                except json.JSONDecodeError:
-                    print("[Gateway] Mensagem recebida não é JSON válido — descartada.")
-                    return
+                    conn = pika.BlockingConnection(
+                        pika.ConnectionParameters(host='localhost'))
+                    ch = conn.channel()
+                    ch.exchange_declare(exchange=EXCHANGE, exchange_type='topic')
 
-                payload   = envelope.get('payload')
-                signature = envelope.get('signature')
+                    result = ch.queue_declare(queue='', exclusive=True)
+                    queue_name = result.method.queue
 
-                if not payload or not signature:
-                    print("[Gateway] Envelope incompleto (payload ou signature ausente) — descartado.")
-                    return
+                    ch.queue_bind(
+                        exchange=EXCHANGE,
+                        queue=queue_name,
+                        routing_key='promotion.published',
+                    )
 
-                if not self.verify_promotion_signature(payload, signature):
-                    print("[Gateway] Assinatura do Promotion Service INVÁLIDA — mensagem descartada.")
-                    return
+                    def callback(ch_, method, properties, body):
+                        try:
+                            envelope = json.loads(body)
+                        except json.JSONDecodeError:
+                            print("[Gateway] Mensagem recebida não é JSON válido — descartada.")
+                            try:
+                                ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                            except Exception:
+                                pass
+                            return
 
-                promo_id = payload.get('id')
-                with self._lock:
-                    ids_existentes = {p.get('id') for p in self.promocoes_validas}
-                    if promo_id in ids_existentes:
-                        print(f"[Gateway] Promoção {promo_id} já registrada — duplicata descartada.")
-                        return
-                    self.promocoes_validas.append(payload)
-                print(f"[Gateway] Promoção {promo_id} aceita e listada.")
+                        payload   = envelope.get('payload')
+                        signature = envelope.get('signature')
 
-            ch.basic_consume(
-                queue=queue_name,
-                on_message_callback=callback,
-                auto_ack=True,
-            )
-            ch.start_consuming()
+                        if not payload or not signature:
+                            print("[Gateway] Envelope incompleto — descartado.")
+                            try:
+                                ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                            except Exception:
+                                pass
+                            return
+
+                        if not self.verify_promotion_signature(payload, signature):
+                            print("[Gateway] Assinatura do Promotion Service INVÁLIDA — descartada.")
+                            try:
+                                ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                            except Exception:
+                                pass
+                            return
+
+                        promo_id = payload.get('id')
+                        with self._lock:
+                            ids_existentes = {p.get('id') for p in self.promocoes_validas}
+                            if promo_id in ids_existentes:
+                                print(f"[Gateway] Promoção {promo_id} duplicata — descartada.")
+                                try:
+                                    ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                                except Exception:
+                                    pass
+                                return
+                            self.promocoes_validas.append(payload)
+
+                        print(f"[Gateway] Promoção {promo_id} aceita e listada.")
+                        try:
+                            ch_.basic_ack(delivery_tag=method.delivery_tag)
+                        except Exception:
+                            pass
+
+                    ch.basic_consume(
+                        queue=queue_name,
+                        on_message_callback=callback,
+                        auto_ack=False,
+                    )
+                    ch.start_consuming()
+
+                except Exception as e:
+                    print(f"[Gateway] Consumer: conexão perdida: {e}. Reconectando em 5s...")
+                finally:
+                    try:
+                        if conn and conn.is_open:
+                            conn.close()
+                    except Exception:
+                        pass
+                time.sleep(5)
 
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
