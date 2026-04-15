@@ -166,6 +166,7 @@ class Gateway:
                     envelope = json.loads(body)
                 except json.JSONDecodeError:
                     print("[Gateway] Mensagem recebida não é JSON válido — descartada.")
+                    ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                     return
 
                 payload   = envelope.get('payload')
@@ -173,10 +174,12 @@ class Gateway:
 
                 if not payload or not signature:
                     print("[Gateway] Envelope incompleto (payload ou signature ausente) — descartado.")
+                    ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                     return
 
                 if not self.verify_promotion_signature(payload, signature):
                     print("[Gateway] Assinatura do Promotion Service INVÁLIDA — mensagem descartada.")
+                    ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                     return
 
                 promo_id = payload.get('id')
@@ -184,14 +187,16 @@ class Gateway:
                     ids_existentes = {p.get('id') for p in self.promocoes_validas}
                     if promo_id in ids_existentes:
                         print(f"[Gateway] Promoção {promo_id} já registrada — duplicata descartada.")
+                        ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                         return
                     self.promocoes_validas.append(payload)
                 print(f"[Gateway] Promoção {promo_id} aceita e listada.")
+                ch_.basic_ack(delivery_tag=method.delivery_tag)
 
             ch.basic_consume(
                 queue=queue_name,
                 on_message_callback=callback,
-                auto_ack=True,
+                auto_ack=False,
             )
             ch.start_consuming()
 

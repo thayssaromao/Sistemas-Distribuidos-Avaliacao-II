@@ -13,18 +13,6 @@ EXCHANGE = 'promotion'
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROMOTION_PUBLIC_KEY_PATH = os.path.join(_BASE_DIR, '..', 'promotion', 'public_key.der')
 RANKING_PUBLIC_KEY_PATH   = os.path.join(_BASE_DIR, '..', 'ranking',   'public_key.der')
-PRIVATE_KEY_PATH          = os.path.join(_BASE_DIR, 'private_key.der')
-PUBLIC_KEY_PATH           = os.path.join(_BASE_DIR, 'public_key.der')
-
-
-def _ensure_keys():
-    """Gera o par de chaves RSA do Notification Service se ainda não existir."""
-    if not os.path.exists(PRIVATE_KEY_PATH):
-        key = RSA.generate(2048)
-        with open(PRIVATE_KEY_PATH, 'wb') as f:
-            f.write(key.export_key('DER'))
-        with open(PUBLIC_KEY_PATH, 'wb') as f:
-            f.write(key.publickey().export_key('DER'))
 
 
 def _normalizar_categoria(categoria: str) -> str:
@@ -36,11 +24,6 @@ def _normalizar_categoria(categoria: str) -> str:
 
 class NotificationService:
     def __init__(self):
-        _ensure_keys()
-
-        with open(PRIVATE_KEY_PATH, 'rb') as f:
-            self._private_key = RSA.import_key(f.read())
-
         # Carregar chaves públicas para validação
         try:
             with open(PROMOTION_PUBLIC_KEY_PATH, 'rb') as f:
@@ -73,18 +56,14 @@ class NotificationService:
             sys.exit(1)
 
         self._ids_notificados: set[str] = set()
+        # Mapa id_promocao → categoria, necessário para publicar hot deals na categoria correta
+        self._categorias: dict[str, str] = {}
 
         print("Notification Service iniciado com sucesso!")
 
     # ------------------------------------------------------------------
-    # Assinatura e validação
+    # Validação de assinaturas dos produtores upstream
     # ------------------------------------------------------------------
-
-    def _sign(self, payload: dict) -> str:
-        """Assina o payload com a chave privada do Notification Service."""
-        data = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
-        h = SHA256.new(data)
-        return pkcs1_15.new(self._private_key).sign(h).hex()
 
     def _verify(self, payload: dict, signature_hex: str, public_key) -> bool:
         """Verifica a assinatura digital do payload."""
@@ -101,18 +80,13 @@ class NotificationService:
     # ------------------------------------------------------------------
 
     def _publish_notification(self, categoria: str, mensagem: str):
-        """Assina e publica a notificação na routing key da categoria."""
+        """Publica a notificação na routing key da categoria (sem assinatura — README isenta Notification)."""
         routing_key = f"promotion.{_normalizar_categoria(categoria)}"
         payload = {"mensagem": mensagem, "categoria": categoria}
-        signature = self._sign(payload)
-        envelope = {
-            'payload': payload,
-            'signature': signature,
-        }
         self._pub_ch.basic_publish(
             exchange=EXCHANGE,
             routing_key=routing_key,
-            body=json.dumps(envelope, ensure_ascii=False),
+            body=json.dumps(payload, ensure_ascii=False),
         )
         print(f"[Notificação] Publicado em '{routing_key}': {mensagem}")
 
@@ -139,6 +113,10 @@ class NotificationService:
         titulo    = payload.get('titulo', 'Nova Promoção')
         preco     = payload.get('preco_promocional', 0)
 
+        # Armazena categoria para uso posterior ao receber hot deal desta promoção
+        if promo_id:
+            self._categorias[promo_id] = categoria
+
         msg = f"Nova oferta: {titulo} por apenas R$ {preco:.2f}!"
         self._publish_notification(categoria, msg)
 
@@ -160,6 +138,13 @@ class NotificationService:
 
         score = payload.get('score', 0)
         msg = f"HOT DEAL! Promocao {id_promo} esta em destaque com score {score}!"
+
+        # Publica na categoria original da promoção com "hot deal" — conforme README
+        categoria = self._categorias.get(id_promo)
+        if categoria:
+            self._publish_notification(categoria, msg)
+
+        # Publica também em 'destaque' para clientes inscritos em todas as promoções em destaque
         self._publish_notification("destaque", msg)
 
     # ------------------------------------------------------------------
@@ -180,10 +165,12 @@ class NotificationService:
                     self.processar_publicacao(envelope)
                 elif method.routing_key == 'promotion.highlight':
                     self.processar_destaque(envelope)
+                ch.basic_ack(delivery_tag=method.delivery_tag)
             except Exception as e:
                 print(f"[ERRO] Falha ao processar mensagem: {e}")
+                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
-        self._ch.basic_consume(queue=queue_name, on_message_callback=callback, auto_ack=True)
+        self._ch.basic_consume(queue=queue_name, on_message_callback=callback, auto_ack=False)
         print("Aguardando 'promotion.published' e 'promotion.highlight'...")
         self._ch.start_consuming()
 

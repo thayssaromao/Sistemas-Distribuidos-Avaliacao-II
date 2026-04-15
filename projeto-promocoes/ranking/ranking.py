@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import threading
 
 import pika
@@ -13,15 +14,19 @@ HIGHLIGHT_THRESHOLD = 5  # score mínimo para hot deal
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PRIVATE_KEY_PATH        = os.path.join(_BASE_DIR, 'private_key.der')
 PUBLIC_KEY_PATH         = os.path.join(_BASE_DIR, 'public_key.der')
-GATEWAY_PUBLIC_KEY_PATH = os.path.join(_BASE_DIR, '..', 'gateway', 'public_key.der')
+# Cópia local da chave pública do Gateway — torna o Ranking autocontido
+GATEWAY_PUBLIC_KEY_PATH = os.path.join(_BASE_DIR, 'gateway_public_key.der')
+_GATEWAY_SOURCE_PATH    = os.path.join(_BASE_DIR, '..', 'gateway', 'public_key.der')
 
 
 def _ensure_gateway_key():
-    if not os.path.exists(GATEWAY_PUBLIC_KEY_PATH):
+    if not os.path.exists(_GATEWAY_SOURCE_PATH):
         raise FileNotFoundError(
-            "Chave pública do Gateway não encontrada. "
+            "Chave pública do Gateway não encontrada em gateway/public_key.der. "
             "Certifique-se de que o Gateway foi iniciado antes do Ranking."
         )
+    if not os.path.exists(GATEWAY_PUBLIC_KEY_PATH):
+        shutil.copy2(_GATEWAY_SOURCE_PATH, GATEWAY_PUBLIC_KEY_PATH)
 
 
 def _ensure_keys():
@@ -175,6 +180,7 @@ class Ranking:
 
                     if not self._verify(payload, signature):
                         print("[Ranking] Assinatura inválida — mensagem descartada.")
+                        ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                         return
 
                     id_promocao = payload.get('id_promocao')
@@ -182,17 +188,20 @@ class Ranking:
 
                     if not id_promocao or not voto:
                         print("[Ranking] Mensagem malformada — descartada.")
+                        ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                         return
 
                     self._processar_voto(id_promocao, voto)
+                    ch_.basic_ack(delivery_tag=method.delivery_tag)
 
                 except Exception as e:
                     print(f"[Ranking] Erro ao processar mensagem: {e}")
+                    ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
             ch.basic_consume(
                 queue=queue_name,
                 on_message_callback=callback,
-                auto_ack=True,
+                auto_ack=False,
             )
             ch.start_consuming()
 

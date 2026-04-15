@@ -178,15 +178,18 @@ class PromotionService:
             try:
                 envelope = json.loads(body)
                 self.processar_promocao_recebida(envelope)
+                ch.basic_ack(delivery_tag=method.delivery_tag)
             except json.JSONDecodeError:
                 print("[ERRO] Mensagem recebida não é um JSON válido.")
+                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             except Exception as e:
                 print(f"[ERRO] Falha ao processar evento: {e}")
+                ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
         self._ch.basic_consume(
             queue=queue_name,
             on_message_callback=callback,
-            auto_ack=True,
+            auto_ack=False,
         )
 
         print("Aguardando eventos 'promotion.received' no RabbitMQ...")
