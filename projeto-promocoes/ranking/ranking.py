@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import threading
+import time
 
 import pika
 from Crypto.Hash import SHA256
@@ -150,60 +151,80 @@ class Ranking:
 
     def _iniciar_consumer(self):
         def run():
-            # Conexão de consumo
-            conn = pika.BlockingConnection(
-                pika.ConnectionParameters(host='localhost'))
-            ch = conn.channel()
-            ch.exchange_declare(exchange=EXCHANGE, exchange_type='topic')
-
-            # Conexão de publicação — separada e na mesma thread para ser thread-safe
-            pub_conn = pika.BlockingConnection(
-                pika.ConnectionParameters(host='localhost'))
-            pub_ch = pub_conn.channel()
-            pub_ch.exchange_declare(exchange=EXCHANGE, exchange_type='topic')
-            self._pub_ch = pub_ch
-
-            result = ch.queue_declare(queue='', exclusive=True)
-            queue_name = result.method.queue
-
-            ch.queue_bind(
-                exchange=EXCHANGE,
-                queue=queue_name,
-                routing_key='promotion.vote',
-            )
-
-            def callback(ch_, method, properties, body):
+            while True:
+                conn     = None
+                pub_conn = None
                 try:
-                    envelope = json.loads(body)
-                    payload   = envelope.get('payload', {})
-                    signature = envelope.get('signature', '')
+                    # Conexão de consumo
+                    conn = pika.BlockingConnection(
+                        pika.ConnectionParameters(host='localhost'))
+                    ch = conn.channel()
+                    ch.exchange_declare(exchange=EXCHANGE, exchange_type='topic')
 
-                    if not self._verify(payload, signature):
-                        print("[Ranking] Assinatura inválida — mensagem descartada.")
-                        ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-                        return
+                    # Conexão de publicação — separada e na mesma thread para ser thread-safe
+                    pub_conn = pika.BlockingConnection(
+                        pika.ConnectionParameters(host='localhost'))
+                    pub_ch = pub_conn.channel()
+                    pub_ch.exchange_declare(exchange=EXCHANGE, exchange_type='topic')
+                    self._pub_ch = pub_ch
 
-                    id_promocao = payload.get('id_promocao')
-                    voto        = payload.get('voto')
+                    result = ch.queue_declare(queue='', exclusive=True)
+                    queue_name = result.method.queue
 
-                    if not id_promocao or not voto:
-                        print("[Ranking] Mensagem malformada — descartada.")
-                        ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-                        return
+                    ch.queue_bind(
+                        exchange=EXCHANGE,
+                        queue=queue_name,
+                        routing_key='promotion.vote',
+                    )
 
-                    self._processar_voto(id_promocao, voto)
-                    ch_.basic_ack(delivery_tag=method.delivery_tag)
+                    def callback(ch_, method, properties, body):
+                        try:
+                            envelope = json.loads(body)
+                            payload   = envelope.get('payload', {})
+                            signature = envelope.get('signature', '')
+
+                            if not self._verify(payload, signature):
+                                print("[Ranking] Assinatura inválida — mensagem descartada.")
+                                ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                                return
+
+                            id_promocao = payload.get('id_promocao')
+                            voto        = payload.get('voto')
+
+                            if not id_promocao or not voto:
+                                print("[Ranking] Mensagem malformada — descartada.")
+                                ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                                return
+
+                            self._processar_voto(id_promocao, voto)
+                            ch_.basic_ack(delivery_tag=method.delivery_tag)
+
+                        except Exception as e:
+                            print(f"[Ranking] Erro no callback: {e}")
+                            try:
+                                ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+                            except Exception:
+                                pass  # canal já está morto — a reconexão cuidará disso
+
+                    ch.basic_consume(
+                        queue=queue_name,
+                        on_message_callback=callback,
+                        auto_ack=False,
+                    )
+                    print("[Ranking] Consumer conectado. Aguardando promotion.vote...")
+                    ch.start_consuming()
 
                 except Exception as e:
-                    print(f"[Ranking] Erro ao processar mensagem: {e}")
-                    ch_.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-
-            ch.basic_consume(
-                queue=queue_name,
-                on_message_callback=callback,
-                auto_ack=False,
-            )
-            ch.start_consuming()
+                    self._pub_ch = None
+                    print(f"[Ranking] Conexão perdida: {e}. Reconectando em 5s...")
+                finally:
+                    for c in (conn, pub_conn):
+                        try:
+                            if c and c.is_open:
+                                c.close()
+                        except Exception:
+                            pass
+                time.sleep(5)
 
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
@@ -233,7 +254,6 @@ if __name__ == '__main__':
     try:
         print("Aguardando eventos 'promotion.vote' no RabbitMQ... (Ctrl+C para encerrar)")
         # Mantém o processo vivo enquanto a thread daemon consome mensagens
-        import time
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
